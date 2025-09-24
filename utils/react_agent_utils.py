@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+import os
 
 
 # Lightweight planner guidance reused by ReAct-Extract
@@ -13,6 +14,23 @@ PLANNER_HEURISTICS = (
     "(6) Prefer sections: Methods/Experiments/Results/Dataset/Conclusion; avoid: Related Work/References/Acknowledgments/Appendix.\n"
     "(7) Generate sub-queries that chain previously found entities (algorithm ↔ metrics, dataset ↔ metrics).\n"
 )
+
+# Allow environment-based override or augmentation of planner heuristics without touching mains/UI.
+# Two mechanisms:
+# 1) PLANNER_HEURISTICS_OVERRIDE: full replacement text
+# 2) HUMAN_HEURISTIC (+ HUMAN_HEURISTIC_TEXT): when enabled, append HUMAN_HEURISTIC_TEXT to defaults
+try:
+    override_text = os.getenv("PLANNER_HEURISTICS_OVERRIDE")
+    if not override_text:
+        flag = str(os.getenv("HUMAN_HEURISTIC") or "").strip().lower() in ("1", "true", "yes", "y", "on")
+        extra = os.getenv("HUMAN_HEURISTIC_TEXT")
+        if flag and extra:
+            override_text = (PLANNER_HEURISTICS + "\n" + extra.strip()).strip()
+    if override_text:
+        PLANNER_HEURISTICS = override_text
+except Exception:
+    # If anything goes wrong, keep the default heuristics
+    pass
 
 
 def _synthesize_answer(llm: Any, topic: str, contexts: List[str]) -> str:

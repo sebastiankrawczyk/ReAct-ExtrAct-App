@@ -7,7 +7,7 @@ import threading
 import subprocess
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Tuple, Set
-
+#s
 import streamlit as st
 import sys
 import traceback
@@ -214,7 +214,7 @@ def _discover_results(run_dir_name: str) -> Dict[str, Dict[str, Any]]:
             except Exception:
                 out[d] = data
     return out
-#s
+
 
 def _ensure_llm_ready() -> None:
     try:
@@ -402,6 +402,7 @@ def _pick_main_script(mode: str) -> str:
         return os.path.join(REPO_ROOT, 'backend', 'main_baseline.py')
     if mode == 'iter_retgen':
         return os.path.join(REPO_ROOT, 'backend', 'main_iter_retgen.py')
+    # react_group removed
     # New canonical modes
     if mode == 'meetings':
         return os.path.join(REPO_ROOT, 'backend', 'main_react_extract.py')
@@ -419,7 +420,7 @@ def _pick_main_script(mode: str) -> str:
 def _read_api_keys() -> Dict[str, str]:
     # Prefer environment, then in-session, then defaults. Optionally fill from local file.
     data: Dict[str, str] = {}
-    wanted = ['OPENROUTER_API_KEY','OPENAI_API_KEY','LLAMA_CLOUD_API_KEY','COHERE_API_KEY','GROQ_API_KEY']
+    wanted = ['OPENROUTER_API_KEY','OPENAI_API_KEY','LLAMA_CLOUD_API_KEY','COHERE_API_KEY','GROQ_API_KEY','OLLAMA_BASE_URL']
     for k in wanted:
         v = os.getenv(k) or (st.session_state.get('api_keys', {}).get(k) if 'api_keys' in st.session_state else None) or DEFAULT_API_KEYS.get(k, '')
         data[k] = v if isinstance(v, str) else ''
@@ -822,6 +823,37 @@ def _run_script(mode: str, state: RunState, eval_off: bool = False, clear_storag
 
         env_vars = dict(os.environ)
         env_vars['PYTHONUNBUFFERED'] = '1'
+        # Propagate parsing options (GROBID) and storage layout
+        try:
+            # Ensure USE_GROBID and GROBID_URL are forwarded to the child
+            if os.getenv('USE_GROBID') is not None:
+                env_vars['USE_GROBID'] = '1' if str(os.getenv('USE_GROBID')).strip().lower() in ('1','true','yes','y','on') else '0'
+            if os.getenv('GROBID_URL'):
+                env_vars['GROBID_URL'] = os.getenv('GROBID_URL')
+            # Keep STORAGE_PATH consistent with parser/provider
+            def _as_bool(v: str) -> bool:
+                return str(v).strip().lower() in ('1','true','yes','y','on')
+            api_now = (env_vars.get('API') or os.getenv('API') or 'openrouter').strip().lower()
+            parser_now = 'grobid' if _as_bool(env_vars.get('USE_GROBID') or os.getenv('USE_GROBID') or '0') else 'llamaparse'
+            env_vars['STORAGE_PATH'] = os.path.join(REPO_ROOT, 'storage', parser_now, api_now)
+        except Exception:
+            pass
+        try:
+            pp = env_vars.get('PYTHONPATH', '')
+            sep = os.pathsep
+            if not pp:
+                env_vars['PYTHONPATH'] = REPO_ROOT
+            elif REPO_ROOT not in pp.split(sep):
+                env_vars['PYTHONPATH'] = REPO_ROOT + sep + pp
+        except Exception:
+            env_vars['PYTHONPATH'] = REPO_ROOT
+        # Ensure storage path matches selected provider to avoid mixing indexes
+        try:
+            api_now = (env_vars.get('API') or os.getenv('API') or 'openrouter').strip().lower()
+            if not env_vars.get('STORAGE_PATH'):
+                env_vars['STORAGE_PATH'] = os.path.join(REPO_ROOT, 'storage', api_now)
+        except Exception:
+            pass
         # Evaluation disabled in this demo
         env_vars['EVALUATION'] = '0'
         env_vars['RAGAS'] = '0'
@@ -1052,6 +1084,7 @@ st.markdown(
 # Top row: logo left, nav right
 top_cols = st.columns([1, 3])
 with top_cols[0]:
+    # Load logo from frontend directory
     top_logo_path = os.path.join(REPO_ROOT, 'frontend', 'Logo2.png')
     if os.path.isfile(top_logo_path):
         st.image(top_logo_path, width=220)
@@ -1112,7 +1145,7 @@ with st.sidebar:
     st.markdown("**🧭 Demo Flow**")
     st.markdown("- 🗂️ Upload PDFs (sample papers)")
     st.markdown("- 🧭 Define data items (fields)")
-    st.markdown("- ⚙️ Pick a mode: Naive RAG · Iterative RAG · ReAct (Meetings) · ReAct‑ExtrAct")
+    st.markdown("- ⚙️ Pick a mode: Naive RAG · Iterative RAG · ReAct‑ExtrAct")
     st.markdown("- ▶️ Run extraction and monitor progress")
     st.markdown("- 🔎 Step 4: Select a run to inspect")
     st.markdown("- 📥 Export a CSV for analysis")
@@ -1154,13 +1187,17 @@ if page == "New Extraction":
 
     st.markdown("---")
     st.markdown("### Step 2: Define Extraction Fields")
-    st.caption("Add the data items you want extracted (e.g., algorithms, datasets, metrics).")
-    st.caption("LLM‑assisted inductive coding can be performed on the content of the final answers; to do this, provide a list of Codes for each extraction field.")
     st.info(
         """
+        Add the data items you want extracted (e.g., algorithms, datasets, metrics).
+
+        LLM‑assisted inductive coding can be performed on the content of the final answers; to do this, provide a list of Codes for each extraction field.
+
+        The system returns concise answers based on your Codes or the summarization instructions you provide.
+
         This tool uses Retrieval‑Augmented Generation (RAG), which performs best when a query is a specific, context‑rich question rather than a list of keywords.
 
-        Tips for Precise Data Extraction
+        **💡 Tips for Precise Data Extraction**
         - Frame as a research question: treat each extraction field as a clear, unambiguous question you would ask a research assistant.
         - Include protocol concepts: incorporate terms from your review protocol (e.g., Population, Intervention, Outcomes) to anchor retrieval.
         """
@@ -1255,6 +1292,80 @@ if page == "New Extraction":
     _current_label = _rev_map.get(_current_internal, "Naive RAG")
     mode_label = st.selectbox("Run mode", options=list(_mode_map.keys()), index=list(_mode_map.keys()).index(_current_label), key="wiz_mode")
     st.session_state['mode'] = _mode_map.get(mode_label, 'baseline')
+    # Optional planner heuristics override shown only for ReAct‑ExtrAct
+    if st.session_state.get('mode') == 'react_extract':
+        _ph_def = st.session_state.get('react_planner_heuristics', '')
+        _ph_example = (
+            "You are a meticulous research assistant using ReAct. Plan how to extract the target fields.\n"
+            "Heuristics: (1) Methods/Experiments are ground truth for what was done.\n"
+            "(2) Results contain performance metrics close to the model/dataset.\n"
+            "(3) Related Work/References should not be primary evidence.\n"
+            "(4) If ML paper, expect metrics, dataset details, model/algorithm, features, platform.\n"
+            "(5) Prefer sections: Methods/Experiments/Results/Dataset/Conclusion; avoid: Related Work/References/Acknowledgments/Appendix.\n"
+        )
+        _ph_text = st.text_area(
+            "Planner heuristic (ReAct‑ExtrAct)",
+            value=_ph_def,
+            height=140,
+            placeholder=_ph_example,
+            key="wiz_react_planner_heuristics",
+            help="If provided, this replaces the default planner heuristics for ReAct‑ExtrAct.",
+        )
+        st.session_state['react_planner_heuristics'] = _ph_text
+    # Provider selection
+    try:
+        from config.config import API as _API_DEF, EMBEDDING_API as _EAPI_DEF, OLLAMA_BASE_URL as _OLLAMA_URL_DEF, OLLAMA_EXECUTION_MODEL as _OLLAMA_EXEC_DEF, OLLAMA_EMBEDDING_MODEL as _OLLAMA_EMB_DEF
+    except Exception:
+        _API_DEF, _EAPI_DEF, _OLLAMA_URL_DEF, _OLLAMA_EXEC_DEF, _OLLAMA_EMB_DEF = 'openrouter', 'openai', 'http://localhost:11434', 'llama3.1:8b-instruct', 'nomic-embed-text'
+    prov_cols = st.columns([1,1,2])
+    with prov_cols[0]:
+        api_choice = st.selectbox("LLM Provider", options=["openrouter","ollama"], index=["openrouter","ollama"].index(_API_DEF) if _API_DEF in ["openrouter","ollama"] else 0, key="wiz_api")
+        os.environ['API'] = api_choice
+    with prov_cols[1]:
+        eapi_choice = st.selectbox("Embedding Provider", options=["openai","ollama"], index=["openai","ollama"].index(_EAPI_DEF) if _EAPI_DEF in ["openai","ollama"] else 0, key="wiz_eapi")
+        os.environ['EMBEDDING_API'] = eapi_choice
+    with prov_cols[2]:
+        if api_choice == 'ollama' or eapi_choice == 'ollama':
+            oll_cols = st.columns([2,2,2])
+            with oll_cols[0]:
+                obase = st.text_input("OLLAMA_BASE_URL", value=os.getenv('OLLAMA_BASE_URL') or _OLLAMA_URL_DEF, key="wiz_ollama_base")
+                if obase:
+                    os.environ['OLLAMA_BASE_URL'] = obase
+            with oll_cols[1]:
+                oexec = st.text_input("Ollama Exec Model", value=os.getenv('OLLAMA_EXECUTION_MODEL') or _OLLAMA_EXEC_DEF, key="wiz_ollama_exec")
+                if oexec:
+                    os.environ['OLLAMA_EXECUTION_MODEL'] = oexec
+            with oll_cols[2]:
+                oemb = st.text_input("Ollama Embedding Model", value=os.getenv('OLLAMA_EMBEDDING_MODEL') or _OLLAMA_EMB_DEF, key="wiz_ollama_emb")
+                if oemb:
+                    os.environ['OLLAMA_EMBEDDING_MODEL'] = oemb
+
+    # Parsing Options (GROBID) — moved here from Settings
+    try:
+        from config.config import USE_GROBID as _DEF_USE_GROBID, GROBID_URL as _DEF_GROBID_URL
+    except Exception:
+        _DEF_USE_GROBID, _DEF_GROBID_URL = False, "http://localhost:8070"
+    pg_cols = st.columns([1,2,1])
+    with pg_cols[0]:
+        use_grobid = st.toggle("Use GROBID pre-parser", value=bool(os.getenv('USE_GROBID') == '1') or _DEF_USE_GROBID, key="wiz_use_grobid")
+        os.environ['USE_GROBID'] = '1' if use_grobid else '0'
+    with pg_cols[1]:
+        grobid_url = st.text_input("GROBID URL", value=(os.getenv('GROBID_URL') or _DEF_GROBID_URL), key="wiz_grobid_url")
+        if grobid_url:
+            os.environ['GROBID_URL'] = grobid_url
+    with pg_cols[2]:
+        if st.button("Check GROBID status"):
+            try:
+                import requests  # type: ignore
+                url = (os.getenv('GROBID_URL') or _DEF_GROBID_URL).rstrip('/') + '/api/isalive'
+                r = requests.get(url, timeout=8)
+                if r.status_code == 200:
+                    st.success("GROBID is alive")
+                else:
+                    st.warning(f"GROBID not healthy (HTTP {r.status_code})")
+            except Exception as e:
+                st.error(f"GROBID check failed: {e}")
+
     # Executor (execution model) selection
     try:
         from config.config import EXECUTION_MODEL as _EXEC_DEF
@@ -1396,6 +1507,19 @@ if page == "New Extraction" and run_btn and not state.running:
             state.progress_stage = 'Initializing...'
         state.progress_pct = 1
         state.started_at = time.time()
+        # Pass optional planner heuristic override to backend via environment for ReAct‑ExtrAct
+        try:
+            if st.session_state.get('mode') == 'react_extract':
+                _ph_text = str(st.session_state.get('react_planner_heuristics') or '').strip()
+                if _ph_text:
+                    os.environ['PLANNER_HEURISTICS_OVERRIDE'] = _ph_text
+                else:
+                    try:
+                        del os.environ['PLANNER_HEURISTICS_OVERRIDE']
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         # Ensure environment override points to single input directory
         state.active_input_dir = INPUT_DIR
         os.environ['INPUT_PATH'] = INPUT_DIR
@@ -1978,31 +2102,6 @@ elif page == "Settings":
         })
         st.success("Saved to config/config_keys.py")
 
-    st.markdown("---")
-    st.subheader("Parsing Options (GROBID)")
-    try:
-        from config.config import USE_GROBID as _DEF_USE_GROBID, GROBID_URL as _DEF_GROBID_URL
-    except Exception:
-        _DEF_USE_GROBID, _DEF_GROBID_URL = False, "http://localhost:8070"
-    pg_cols = st.columns([1,2,1])
-    with pg_cols[0]:
-        use_grobid = st.toggle("Use GROBID pre-parser", value=bool(os.getenv('USE_GROBID') == '1') or _DEF_USE_GROBID, key="wiz_use_grobid")
-        os.environ['USE_GROBID'] = '1' if use_grobid else '0'
-    with pg_cols[1]:
-        grobid_url = st.text_input("GROBID URL", value=(os.getenv('GROBID_URL') or _DEF_GROBID_URL), key="wiz_grobid_url")
-        if grobid_url:
-            os.environ['GROBID_URL'] = grobid_url
-    with pg_cols[2]:
-        if st.button("Check GROBID status"):
-            try:
-                import requests  # type: ignore
-                url = (os.getenv('GROBID_URL') or _DEF_GROBID_URL).rstrip('/') + '/api/isalive'
-                r = requests.get(url, timeout=8)
-                if r.status_code == 200:
-                    st.success("GROBID is alive")
-                else:
-                    st.warning(f"GROBID not healthy (HTTP {r.status_code})")
-            except Exception as e:
-                st.error(f"GROBID check failed: {e}")
+    # GROBID parsing options moved to New Extraction page
 
 
