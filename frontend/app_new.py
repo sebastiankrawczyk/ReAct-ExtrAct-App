@@ -1164,6 +1164,10 @@ with st.sidebar:
 # Handle demo run trigger
 if page == "New Extraction":
     # In-wizard controls
+    st.markdown("### Demonstration Video")
+    st.warning("We invite you to watch our demonstration video before trying our demo yourself!")
+    st.video("https://www.youtube.com/embed/VIDEO_ID")
+    
     st.markdown("### Step 1: Setup Project")
     st.info("First, give your project a name and upload the source documents (PDFs) that will form your corpus. Once uploaded, you can define multiple extraction fields and run them against this document set.")
     # Project name
