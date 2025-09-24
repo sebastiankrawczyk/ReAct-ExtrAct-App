@@ -1132,7 +1132,7 @@ if not state.running and (not state.stdout):
 # Sidebar: description only (no navigation)
 with st.sidebar:
     st.caption("Click on arrow above for more workspace.")
-    st.markdown("#### ReAct-ExtrAct: A Tool for Source-Grounded Automated Data Extraction in Systematic Reviews with Small Language Models")
+    st.markdown("#### ReAct-ExtrAct: A Tool for Source-Grounded Automated Data Extraction in Systematic Reviews")
     st.markdown(
         """
         **Enhancing Reproducibility in Systematic Reviews 🔬**
@@ -1189,17 +1189,26 @@ if page == "New Extraction":
     st.markdown("### Step 2: Define Extraction Fields")
     st.info(
         """
-        Add the data items you want extracted (e.g., algorithms, datasets, metrics).
+        1. Define Your Extraction Fields
 
-        LLM‑assisted inductive coding can be performed on the content of the final answers; to do this, provide a list of Codes for each extraction field.
+        Start by specifying the data items you want to extract. For each field, list the specific information you're looking for. The more specific, the better the results.
 
-        The system returns concise answers based on your Codes or the summarization instructions you provide.
+        Examples: Algorithms, Datasets, Evaluation Metrics
 
-        This tool uses Retrieval‑Augmented Generation (RAG), which performs best when a query is a specific, context‑rich question rather than a list of keywords.
 
-        **💡 Tips for Precise Data Extraction**
-        - Frame as a research question: treat each extraction field as a clear, unambiguous question you would ask a research assistant.
-        - Include protocol concepts: incorporate terms from your review protocol (e.g., Population, Intervention, Outcomes) to anchor retrieval.
+        2. Provide Codes for Automated Categorization
+
+        To use our LLM-assisted inductive coding feature, you must provide a list of Codes for each extraction field you defined above. The system will use these codes to categorize the content it extracts, returning concise and structured answers based on your list. If codes are not provided, a concise answer will be a simple summary of the final answer.
+
+
+        3. How to Get the Best Results
+
+        This tool uses Retrieval-Augmented Generation (RAG), which performs best when you provide specific, context-rich questions rather than a simple list of keywords.
+
+        💡 Tips for Precise Data Extraction:
+
+        - Frame it as a research question. Treat each extraction field as a clear, unambiguous question you would ask a research assistant.
+        - Include protocol concepts. Incorporate terms from your review protocol (e.g., Population, Intervention, Outcomes) to anchor the system's retrieval process and improve accuracy.
         """
     )
     # Initialize from config; if empty, preload 5 default queri
@@ -1275,7 +1284,15 @@ if page == "New Extraction":
 
     st.markdown("---")
     st.markdown("### Step 3: Configure & Run")
-    st.caption("Pick an extraction mode and start extraction.")
+    st.info(
+        """
+        Pick an extraction mode and start extraction.
+
+        Requirements:
+        - If using hosted APIs, set your API keys in the sidebar (OpenRouter or OpenAI, plus Llama Cloud for parsing).
+        - For local runs, you need both Ollama (for the LLM) and GROBID (for PDF parsing). These are disabled on the public demo.
+        """
+    )
     # Allow running even if config/queries.py is empty (old behavior)
     try:
         _cfg_qs = [q for q in (_read_current_queries() or []) if str((q or {}).get('topic','')).strip()]
@@ -1375,15 +1392,16 @@ if page == "New Extraction":
         _EXEC_DEF,
         "qwen/qwen-turbo",
         "qwen/qwen-2.5-7b-instruct",
-        "openai/gpt-4o-mini",
-        "openai/gpt-4.1-mini",
-        "google/gemini-1.5-flash",
+        "qwen/qwen2.5-vl-72b-instruct",
+        "google/gemini-2.0-flash-lite-001",
+        "deepseek/deepseek-chat-v3.1:free",
     ]
     exec_opts = sorted(set(exec_opts))
-    sel_exec = st.selectbox("Execution model (executor)", options=exec_opts, index=exec_opts.index(_EXEC_DEF) if _EXEC_DEF in exec_opts else 0, key="wiz_exec_model")
-    # Apply to environment so downstream imports pick it up
-    if sel_exec:
-        os.environ['EXECUTION_MODEL'] = sel_exec
+    if api_choice == 'openrouter':
+        sel_exec = st.selectbox("OpenRouter Exec Model", options=exec_opts, index=exec_opts.index(_EXEC_DEF) if _EXEC_DEF in exec_opts else 0, key="wiz_exec_model")
+        # Apply to environment so downstream imports pick it up
+        if sel_exec:
+            os.environ['EXECUTION_MODEL'] = sel_exec
     # Evaluation disabled in this demo (no toggle)
     st.session_state['eval_off'] = True
     # Rebuild vector indexes option removed for demo; default is off
@@ -1615,7 +1633,11 @@ if page == "New Extraction":
     # Step 4 – Results table
         st.markdown("---")
     st.markdown("### Step 4: Examine Results")
-    st.caption("Select a completed extraction to view answers and supporting evidence. Click an answer (🔍) to open Inspector mode with full answer and evidence for that field.")
+    st.info(
+        """
+        Select a completed extraction to view answers and supporting evidence. Click an answer (🔍) to open Inspector mode with full answer and detailed evidence for that field.
+        """
+    )
     # Show a simple selector bar (newest to oldest). Do not auto-select a run.
     runs_list = _list_run_dirs()
     sentinel = "— Select a run —"
@@ -1845,7 +1867,7 @@ if page == "New Extraction":
 
 elif page == "Results Dashboard":
     st.subheader("Extraction Results History")
-    st.caption("Review previous runs, filter by paper and field, and open the Inspector for answer details and evidence.")
+    st.info("Review previous runs, filter by paper and field, and open the Inspector for answer details and evidence.")
     runs_display, display_to_real = _curate_runs()
     sentinel = "— Select a run —"
     options_list = [sentinel] + runs_display
@@ -2067,7 +2089,7 @@ elif page == "Results Dashboard":
 
 elif page == "Settings":
     st.subheader("API Keys")
-    st.caption("Enter keys used for model inference and parsing. For the purposes of this demo we provide access for free.")
+    st.info("Enter keys used for model inference and parsing. For the purposes of this demo we provide access for free.")
     keys_init = _read_api_keys()
     colk1, colk2 = st.columns(2)
     with colk1:
