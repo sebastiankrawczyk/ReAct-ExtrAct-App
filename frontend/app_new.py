@@ -1156,6 +1156,7 @@ with st.sidebar:
     
     st.markdown("- ReAct‑ExtrAct: adds confidence cues and structured extraction. Slowest; richest outputs. Adds self‑reflection based on confidence cues before attending reconciliation meetings.")
     st.caption("Modes trade speed for depth. Pick based on demo time and desired detail.")
+    st.caption("Only API-hosted models are available in this demo (defaults: LlamaParse for parsing, OpenAI embeddings, and LLMs via OpenRouter).")
     st.markdown("---")
     st.caption("You can hide this panel to maximize workspace.")
 
@@ -1164,9 +1165,11 @@ with st.sidebar:
 # Handle demo run trigger
 if page == "New Extraction":
     # In-wizard controls
-    st.markdown("### Demonstration Video")
-    st.warning("We invite you to watch our demonstration video before trying our demo yourself!")
-    st.video("https://www.youtube.com/embed/VIDEO_ID")
+    # Demonstration video (hidden by default; set SHOW_DEMO_VIDEO=1 to show)
+    if os.getenv('SHOW_DEMO_VIDEO') == '1':
+        st.markdown("### Demonstration Video")
+        st.warning("We invite you to watch our demonstration video before trying our demo yourself!")
+        st.video("https://www.youtube.com/embed/VIDEO_ID")
     
     st.markdown("### Step 1: Setup Project")
     st.info("First, give your project a name and upload the source documents (PDFs) that will form your corpus. Once uploaded, you can define multiple extraction fields and run them against this document set.")
