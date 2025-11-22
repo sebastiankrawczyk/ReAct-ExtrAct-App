@@ -5,10 +5,6 @@ import json
 import math
 from typing import List
 from datetime import datetime
-try:
-    import plotly.graph_objects as go
-except Exception:
-    go = None
 
 from config.config import (
     INPUT_PATH, 
@@ -160,104 +156,5 @@ class ReportGenerator:
             print(f"[save] wrote → {self.output_dir}/start_up_detail.json")
         except Exception:
             pass
-        
-        # If evaluations exist in files_results, create a radar chart dataset for plotting
-        radar_data = []
-        allowed_keys = {
-            "faithfulness",
-            "semantic_similarity",
-            "answer_correctness",
-            "llm_context_precision_without_reference",
-        }
-        for entry in self.files_results:
-            for r in entry["result"]:
-                if isinstance(r.get("evaluation"), dict) and r["evaluation"].get("ragas"):
-                    sample = r["evaluation"]["ragas"]
-                    if isinstance(sample, dict):
-                        obj = {
-                            "file": entry["file_name"],
-                            "topic": r["query"]["topic"],
-                        }
-                        for k in allowed_keys:
-                            v = sample.get(k)
-                            if isinstance(v, (int, float)):
-                                obj[k] = float(v)
-                        radar_data.append(obj)
-        if radar_data:
-            with open(f"{self.output_dir}/radar_dataset.json", 'w', encoding='utf-8') as f:
-                json.dump({"samples": radar_data}, f, ensure_ascii=False, indent=4)
-            try:
-                print(f"[save] wrote → {self.output_dir}/radar_dataset.json")
-            except Exception:
-                pass
-        
-        # Additionally, render radar (spider) charts if Plotly is available
-        if radar_data and go is not None:
-            os.makedirs(f"{self.output_dir}/radar_charts", exist_ok=True)
-            # Determine metric axes by collecting numeric keys across samples
-            numeric_keys = []
-            for key in radar_data[0].keys():
-                if key not in ("file", "topic") and isinstance(radar_data[0][key], (int, float)):
-                    numeric_keys.append(key)
-            # Fallback: infer numeric keys by checking all keys across samples
-            if not numeric_keys:
-                all_keys = set()
-                for s in radar_data:
-                    all_keys.update(k for k, v in s.items() if k not in ("file", "topic") and isinstance(v, (int, float)))
-                numeric_keys = sorted(all_keys)
-            # Plot per file a multi-trace radar over topics
-            file_to_samples = {}
-            for s in radar_data:
-                file_to_samples.setdefault(s["file"], []).append(s)
-            for file_name, samples in file_to_samples.items():
-                fig = go.Figure()
-                theta = numeric_keys
-                for s in samples:
-                    r_vals = [float(s.get(k, 0) or 0) for k in numeric_keys]
-                    fig.add_trace(go.Scatterpolar(r=r_vals, theta=theta, fill='toself', name=s["topic"]))
-                fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 1])), showlegend=True, title=f"RAGAS Metrics: {file_name}")
-                out_path = f"{self.output_dir}/radar_charts/{file_name}.html"
-                fig.write_html(out_path, include_plotlyjs='cdn')
-                try:
-                    print(f"[save] wrote → {out_path}")
-                except Exception:
-                    pass
-
-            # Per-run aggregate PNG (average over all samples in this run)
-            try:
-                agg_dir = f"{self.output_dir}/aggregated"
-                os.makedirs(agg_dir, exist_ok=True)
-                # compute averages
-                sums = {k: 0.0 for k in numeric_keys}
-                counts = {k: 0 for k in numeric_keys}
-                for s in radar_data:
-                    for k in numeric_keys:
-                        v = s.get(k)
-                        if isinstance(v, (int, float)) and not (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
-                            sums[k] += float(v)
-                            counts[k] += 1
-                averages = {k: (sums[k]/counts[k] if counts[k] else 0.0) for k in numeric_keys}
-                # write JSON
-                with open(f"{agg_dir}/run_ragas_average.json", 'w', encoding='utf-8') as f:
-                    json.dump({'averages': averages}, f, ensure_ascii=False, indent=4)
-                try:
-                    print(f"[save] wrote → {agg_dir}/run_ragas_average.json")
-                except Exception:
-                    pass
-                # render PNG
-                metrics_order = list(averages.keys())
-                values = [averages[m] for m in metrics_order]
-                metrics_closed = metrics_order + metrics_order[:1]
-                values_closed = values + values[:1]
-                fig = go.Figure()
-                fig.add_trace(go.Scatterpolar(r=values_closed, theta=metrics_closed, fill='toself', name='Average'))
-                fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 1])), showlegend=False, title='RAGAS Average Metrics (This Run)')
-                fig.write_image(f"{agg_dir}/run_ragas_average.png", scale=2)
-                try:
-                    print(f"[save] wrote → {agg_dir}/run_ragas_average.png")
-                except Exception:
-                    pass
-            except Exception:
-                pass
         
         return

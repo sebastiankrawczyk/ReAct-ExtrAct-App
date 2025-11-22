@@ -44,7 +44,14 @@ def _synthesize_answer(llm: Any, topic: str, contexts: List[str]) -> str:
         Contexts:
         {ctx_text}
     """.strip()
-    return f"{llm.complete(prompt)!s}".strip()
+    try:
+        return f"{llm.complete(prompt)!s}".strip()
+    except Exception as e:
+        try:
+            print(f"[llm-error] synthesis failed: {e}")
+        except Exception:
+            pass
+        return ""
 
 
 @dataclass
