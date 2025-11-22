@@ -24,9 +24,6 @@ from config.config import (
     OLLAMA_EMBEDDING_MODEL,
     MAX_STEPS,
     CONCURRENCY,
-    EVALUATION,
-    RAGAS,
-    G_EVAL,
     GROUND_TRUTH,
     CLEAR_STORAGE,
     COHERE_RERANK,
@@ -34,7 +31,6 @@ from config.config import (
 from config.config_keys import (
     OPENAI_API_KEY,
     LLAMA_CLOUD_API_KEY,
-    COHERE_API_KEY,
     OPENROUTER_API_KEY,
 )
 
@@ -46,7 +42,6 @@ except Exception:
 
 from utils.ReportGenerator import ReportGenerator
 from utils.VectorQueryEngineCreator import VectorQueryEngineCreator
-from utils.RAGEvaluator import RAGEvaluator
 from utils.TokenTracker import TokenTracker
 
 
@@ -155,7 +150,7 @@ def main():
         print(f"\nProcessing file: {file}")
         query_engine = VectorQueryEngineCreator(
             llama_parse_api_key=LLAMA_CLOUD_API_KEY,
-            cohere_api_key=COHERE_API_KEY,
+            cohere_api_key=os.getenv('COHERE_API_KEY',''),
             input_path=INPUT_PATH,
             storage_path=STORAGE_PATH,
             cohere_rerank=COHERE_RERANK,
@@ -266,31 +261,8 @@ def main():
                 "best_context": best_context,
             }
 
-            # Optional evaluation
-            if EVALUATION:
-                try:
-                    gt = [""]
-                    if GROUND_TRUTH:
-                        full_gt = GROUND_TRUTH_LIST.get(file, [])
-                        idx = {plain_questions[i]["topic"]: i for i in range(len(plain_questions))}.get(topic, None)
-                        if idx is not None and idx < len(full_gt):
-                            gt = [full_gt[idx]]
-                    eval_one = RAGEvaluator(
-                        start_questions=[topic],
-                        llm=Settings.llm,
-                        results=[result],
-                        eval_model=EVAL_MODEL,
-                        evaluate_ragas=RAGAS,
-                        evaluate_geval=G_EVAL,
-                        ground_truth=gt,
-                        filename=file,
-                        embedding_model_name=EMBEDDING_MODEL,
-                    ).evaluate()
-                    result["evaluation"] = eval_one[0] if eval_one else {"ragas": None, "geval": None}
-                except Exception:
-                    result["evaluation"] = {"ragas": None, "geval": None}
-            else:
-                result["evaluation"] = None
+            # evaluation disabled/removed
+            result["evaluation"] = None
 
             return result
 

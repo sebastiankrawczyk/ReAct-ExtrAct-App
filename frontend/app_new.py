@@ -25,7 +25,7 @@ def _apply_streamlit_secrets_to_env() -> None:
         if not secrets:
             return
         keys = [
-            'OPENROUTER_API_KEY','OPENAI_API_KEY','LLAMA_CLOUD_API_KEY','COHERE_API_KEY','GROQ_API_KEY',
+            'OPENROUTER_API_KEY','OPENAI_API_KEY','LLAMA_CLOUD_API_KEY',
             'ALLOW_WRITE_KEYS_FILE','EVALUATION','RAGAS','G_EVAL','CLEAR_STORAGE','COHERE_RERANK',
             'INPUT_PATH','OUTPUT_PATH','STORAGE_PATH',
         ]
@@ -98,6 +98,29 @@ def _ensure_dirs() -> None:
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
+def _strip_think(text: str) -> str:
+    try:
+        if not isinstance(text, str) or not text:
+            return text
+        import re as _re
+        return _re.sub(r"(?is)<\s*think\s*>[\s\S]*?<\s*/\s*think\s*>", "", text).strip()
+    except Exception:
+        return text
+
+
+def _clean_field_text(text: str) -> str:
+    try:
+        if not isinstance(text, str):
+            return ''
+        text = _strip_think(text)
+        text = text.replace('\n', ' ').replace('\t', ' ')
+        import re as _re
+        text = _re.sub(r"\s+", " ", text).strip()
+        return text
+    except Exception:
+        return (text or '').strip()
+
+
 def _clear_inspector_state() -> None:
     try:
         st.session_state.pop('inspector_open', None)
@@ -114,8 +137,6 @@ DEFAULT_API_KEYS: Dict[str, str] = {
     'OPENROUTER_API_KEY': os.getenv('OPENROUTER_API_KEY', ''),
     'OPENAI_API_KEY': os.getenv('OPENAI_API_KEY', ''),
     'LLAMA_CLOUD_API_KEY': os.getenv('LLAMA_CLOUD_API_KEY', ''),
-    'COHERE_API_KEY': os.getenv('COHERE_API_KEY', ''),
-    'GROQ_API_KEY': os.getenv('GROQ_API_KEY', ''),
 }
 
 
@@ -135,11 +156,6 @@ def _ensure_default_keys() -> None:
         _apply_keys_to_env(st.session_state['api_keys'])
     except Exception:
         pass
-
-
-def _ensure_keys_file_exists() -> None:
-    # Avoid persisting secrets to disk by default
-    return
 
 
 def _read_json(path: str) -> Any:
@@ -214,6 +230,37 @@ def _discover_results(run_dir_name: str) -> Dict[str, Dict[str, Any]]:
             except Exception:
                 out[d] = data
     return out
+
+
+# --- Validation persistence (per run, per paper, per topic) ---
+def _validation_path(run_dir_name: str) -> str:
+    return os.path.join(OUTPUT_DIR, run_dir_name, 'validation.json')
+
+def _read_validation(run_dir_name: Optional[str]) -> Dict[str, Dict[str, bool]]:
+    if not run_dir_name:
+        return {}
+    try:
+        p = _validation_path(run_dir_name)
+        if os.path.isfile(p):
+            with open(p, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data  # {paper: {topic: bool}}
+    except Exception:
+        pass
+    return {}
+
+def _write_validation(run_dir_name: Optional[str], data: Dict[str, Dict[str, bool]]) -> None:
+    if not run_dir_name:
+        return
+    try:
+        out_dir = os.path.join(OUTPUT_DIR, run_dir_name)
+        os.makedirs(out_dir, exist_ok=True)
+        p = _validation_path(run_dir_name)
+        with open(p, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 
 def _ensure_llm_ready() -> None:
@@ -420,7 +467,7 @@ def _pick_main_script(mode: str) -> str:
 def _read_api_keys() -> Dict[str, str]:
     # Prefer environment, then in-session, then defaults. Optionally fill from local file.
     data: Dict[str, str] = {}
-    wanted = ['OPENROUTER_API_KEY','OPENAI_API_KEY','LLAMA_CLOUD_API_KEY','COHERE_API_KEY','GROQ_API_KEY','OLLAMA_BASE_URL']
+    wanted = ['OPENROUTER_API_KEY','OPENAI_API_KEY','LLAMA_CLOUD_API_KEY','OLLAMA_BASE_URL']
     for k in wanted:
         v = os.getenv(k) or (st.session_state.get('api_keys', {}).get(k) if 'api_keys' in st.session_state else None) or DEFAULT_API_KEYS.get(k, '')
         data[k] = v if isinstance(v, str) else ''
@@ -447,8 +494,6 @@ def _write_api_keys(keys: Dict[str, str]) -> None:
             'OPENROUTER_API_KEY': keys.get('OPENROUTER_API_KEY',''),
             'OPENAI_API_KEY': keys.get('OPENAI_API_KEY',''),
             'LLAMA_CLOUD_API_KEY': keys.get('LLAMA_CLOUD_API_KEY',''),
-            'COHERE_API_KEY': keys.get('COHERE_API_KEY',''),
-            'GROQ_API_KEY': keys.get('GROQ_API_KEY',''),
         }
     except Exception:
         pass
@@ -461,8 +506,6 @@ def _write_api_keys(keys: Dict[str, str]) -> None:
                 f"OPENROUTER_API_KEY = '{_read_api_keys().get('OPENROUTER_API_KEY','')}'\n",
                 f"OPENAI_API_KEY = '{_read_api_keys().get('OPENAI_API_KEY','')}'\n",
                 f"LLAMA_CLOUD_API_KEY = '{_read_api_keys().get('LLAMA_CLOUD_API_KEY','')}'\n",
-                f"COHERE_API_KEY = '{_read_api_keys().get('COHERE_API_KEY','')}'\n",
-                f"GROQ_API_KEY = '{_read_api_keys().get('GROQ_API_KEY','')}'\n",
             ]
             with open(path, 'w', encoding='utf-8') as f:
                 f.writelines(lines)
@@ -555,6 +598,27 @@ def _write_run_name(run_dir_name: str, name: str) -> None:
             f.write(name.strip())
     except Exception:
         pass
+
+
+def _extract_run_timestamp(run_dir_name: str) -> Optional[str]:
+    try:
+        import re as _re
+        m = _re.match(r"^(\d{4}\.\d{2}\.\d{2}_\d{2}\.\d{2}\.\d{2})", run_dir_name)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return None
+
+
+def _format_run_display(run_dir_name: str) -> str:
+    nm = _read_run_name(run_dir_name)
+    ts = _extract_run_timestamp(run_dir_name)
+    if nm and ts:
+        return f"{nm} ({ts})"
+    if nm:
+        return nm
+    return run_dir_name
 
 
 def _slugify_name(name: str) -> str:
@@ -810,16 +874,9 @@ def _run_script(mode: str, state: RunState, eval_off: bool = False, clear_storag
         before_runs = _list_run_dirs()
         script = _pick_main_script(mode)
         state.script_path = script
-        # seed buffer with command + env debug (mask keys)
-        masked_keys = {k: ('***' if v else '') for k, v in _read_api_keys().items()}
-        dbg = [
-            f"[debug] cwd={REPO_ROOT}",
-            f"[debug] script={script}",
-            f"[debug] pdfs={state.files_total}",
-            f"[debug] keys_present={{k:bool(v) for k,v in {masked_keys}.items()}}",
-        ]
-        buf: List[str] = [line + "\n" for line in dbg]
-        state.stdout = ''.join(buf)[-8000:]
+        # start with empty buffer (suppress debug preamble)
+        buf: List[str] = []
+        state.stdout = ''
 
         env_vars = dict(os.environ)
         env_vars['PYTHONUNBUFFERED'] = '1'
@@ -940,7 +997,6 @@ def _run_script(mode: str, state: RunState, eval_off: bool = False, clear_storag
 st.set_page_config(page_title="ReAct‑ExtrAct Runner", layout="wide", initial_sidebar_state="expanded")
 _ensure_dirs()
 _ensure_default_keys()
-_ensure_keys_file_exists()
 
 if 'run_state' not in st.session_state:
     st.session_state['run_state'] = RunState()
@@ -955,8 +1011,7 @@ def _curate_runs() -> Tuple[List[str], Dict[str, str]]:
     all_runs = _list_run_dirs()
     # map to display name using optional run_name.txt
     def _display_for(r: str) -> str:
-        nm = _read_run_name(r)
-        return f"{nm} ({r})" if nm else r
+        return _format_run_display(r)
     session_runs = [r for r in (st.session_state.get('session_runs') or []) if r in all_runs]
     # pick one baseline run from history (latest by sort order)
     demo_dir = next((r for r in all_runs if r.endswith('_baseline')), None)
@@ -1031,19 +1086,7 @@ st.markdown(
         color: #ffffff !important;
     }
     #delete-all-marker ~ div.stButton button:hover { background-color: #e53935 !important; border-color: #e53935 !important; }
-    .del-marker ~ div.stButton button {
-        background-color: #d32f2f !important;
-        border-color: #d32f2f !important;
-        color: #ffffff !important;
-        margin-top: -37px !important;
-    }
-    .del-marker ~ div.stButton button:hover { background-color: #e53935 !important; border-color: #e53935 !important; }
-    /* Also shift the Streamlit button wrapper up to ensure movement */
-    .del-marker ~ div.stButton { margin-top: -38px !important; }
-    /* Align delete button vertically with inputs */
-    .del-marker { height: 0px; }
     /* Scoped color variants for specific buttons (override primary/secondary) */
-    /* EXCEPTIONS: force special wizard buttons */
     .btn-blue div.stButton > button[kind] {
         background-color: #1976d2 !important;
         border-color: #1976d2 !important;
@@ -1147,16 +1190,7 @@ with st.sidebar:
     st.markdown("- 🧭 Define data items (fields)")
     st.markdown("- ⚙️ Pick a mode: Naive RAG · Iterative RAG · ReAct‑ExtrAct")
     st.markdown("- ▶️ Run extraction and monitor progress")
-    st.markdown("- 🔎 Step 4: Select a run to inspect")
     st.markdown("- 📥 Export a CSV for analysis")
-    st.markdown("---")
-    st.markdown("**💡 Mode Guide**")
-    st.markdown("- Naive RAG: single‑pass retrieval and answer. Fastest; good for straightforward fields.")
-    st.markdown("- Iterative RAG: two‑step refinement before answering. Slower; improves precision on nuanced fields.")
-    
-    st.markdown("- ReAct‑ExtrAct: adds confidence cues and structured extraction. Slowest; richest outputs. Adds self‑reflection based on confidence cues before attending reconciliation meetings.")
-    st.caption("Modes trade speed for depth. Pick based on demo time and desired detail.")
-    st.caption("Only API-hosted models are available in this demo (defaults: LlamaParse for parsing, OpenAI embeddings, and LLMs via OpenRouter).")
     st.markdown("---")
     st.caption("You can hide this panel to maximize workspace.")
 
@@ -1165,54 +1199,63 @@ with st.sidebar:
 # Handle demo run trigger
 if page == "New Extraction":
     # In-wizard controls
-    # Demonstration video (hidden by default; set SHOW_DEMO_VIDEO=1 to show)
-    if os.getenv('SHOW_DEMO_VIDEO') == '1':
-        st.markdown("### Demonstration Video")
-        st.warning("We invite you to watch our demonstration video before trying our demo yourself!")
-        st.video("https://www.youtube.com/embed/VIDEO_ID")
-    
+    # Demonstration video removed for local app experience
+
     st.markdown("### Step 1: Setup Project")
-    st.info("First, give your project a name and upload the source documents (PDFs) that will form your corpus. Once uploaded, you can define multiple extraction fields and run them against this document set.")
+    st.info("First, give your project a name and upload the source documents (PDFs) that will form your corpus.")
     # Project name
     proj_cols = st.columns([2, 2, 2])
     with proj_cols[0]:
         project_name = st.text_input("Project name *", value=st.session_state.get('project_name',''), key="wiz_project_name", placeholder="e.g., my_research_project")
         st.session_state['project_name'] = project_name
-    # Upload PDFs
-    up_files = st.file_uploader("Upload PDFs", type=["pdf"], accept_multiple_files=True, key="wiz_upload")
-    if up_files:
-        # Clear input/ and copy uploaded files there (single input directory)
-        for f in os.listdir(INPUT_DIR):
-            try:
-                os.remove(os.path.join(INPUT_DIR, f))
-            except Exception:
-                pass
-        for up in up_files:
-            with open(os.path.join(INPUT_DIR, up.name), 'wb') as f:
-                f.write(up.read())
-        st.success(f"Selected {len(up_files)} file(s) for this run (saved in input/).")
+    # Demo mode toggle
+    demo_mode = st.toggle("Use example dataset", value=bool(st.session_state.get('use_demo', False)), key="wiz_demo")
+    st.session_state['use_demo'] = demo_mode
+    # Upload PDFs (disabled in demo mode)
+    if not demo_mode:
+        up_files = st.file_uploader("Upload PDFs", type=["pdf"], accept_multiple_files=True, key="wiz_upload")
+        if up_files:
+            # Clear input/ and copy uploaded files there (single input directory)
+            for f in os.listdir(INPUT_DIR):
+                try:
+                    os.remove(os.path.join(INPUT_DIR, f))
+                except Exception:
+                    pass
+            for up in up_files:
+                with open(os.path.join(INPUT_DIR, up.name), 'wb') as f:
+                    f.write(up.read())
+            st.success(f"Selected {len(up_files)} file(s) for this run (saved in input/).")
+    else:
+        # Show available demo PDFs
+        try:
+            demo_pdfs = [f for f in os.listdir(INPUT_DIR_DEMO) if f.lower().endswith('.pdf')]
+        except Exception:
+            demo_pdfs = []
+        if demo_pdfs:
+            st.success(f"Example dataset enabled. Using {len(demo_pdfs)} PDF(s).")
+            st.caption(", ".join(sorted(demo_pdfs)))
+        else:
+            st.warning("Example dataset enabled but no PDFs found. Add 5 sample PDFs to the example folder.")
 
     st.markdown("---")
     st.markdown("### Step 2: Define Extraction Fields")
     st.info(
         """
-        1. Define Your Extraction Fields
+        **1. Define Your Extraction Fields**
 
         Start by specifying the data items you want to extract. For each field, list the specific information you're looking for. The more specific, the better the results.
 
-        Examples: Algorithms, Datasets, Evaluation Metrics
+        
+        **2. Provide Codes for Automated Categorization**
+
+        To use our LLM-assisted inductive coding feature, you must provide a list of Codes for each extraction field you defined above. The system will use these codes to categorize the content it extracts, returning concise and structured answers based on your list. If codes are not provided, a concise answer will be a simple summary of the final answer. **Warning:** The concise-answer feature, in particular if codes are not provided, might contain errors.
 
 
-        2. Provide Codes for Automated Categorization
-
-        To use our LLM-assisted inductive coding feature, you must provide a list of Codes for each extraction field you defined above. The system will use these codes to categorize the content it extracts, returning concise and structured answers based on your list. If codes are not provided, a concise answer will be a simple summary of the final answer.
-
-
-        3. How to Get the Best Results
+        **3. How to Get the Best Results**
 
         This tool uses Retrieval-Augmented Generation (RAG), which performs best when you provide specific, context-rich questions rather than a simple list of keywords.
 
-        💡 Tips for Precise Data Extraction:
+        **💡 Tips for Precise Data Extraction:**
 
         - Frame it as a research question. Treat each extraction field as a clear, unambiguous question you would ask a research assistant.
         - Include protocol concepts. Incorporate terms from your review protocol (e.g., Population, Intervention, Outcomes) to anchor the system's retrieval process and improve accuracy.
@@ -1241,7 +1284,7 @@ if page == "New Extraction":
         st.info("No fields found. Default 5 will appear if config is empty.")
     # Removed tip per request
     for i, q in enumerate(st.session_state['wiz_queries']):
-        cols = st.columns([3, 3, 1])
+        cols = st.columns([3, 3])
         with cols[0]:
             topic = st.text_input(
                 f"Topic {i+1}",
@@ -1258,35 +1301,23 @@ if page == "New Extraction":
                 label_visibility="collapsed",
                 placeholder=f"Codes {i+1}",
             )
-        with cols[2]:
-            # Marker to let CSS position/style the delete button
-            st.markdown("<div class='del-marker'></div>", unsafe_allow_html=True)
-            if st.button("🗑️ Delete", key=f"wiz_del_{i}"):
-                _to_delete.append(i)
         q_rows.append({"topic": topic, "possible_options": opts})
-    if _to_delete:
-        # Remove in reverse order to preserve indices
-        for idx in sorted(_to_delete, reverse=True):
-            try:
-                del st.session_state['wiz_queries'][idx]
-            except Exception:
-                pass
-        st.rerun()
+    # Per-field delete removed per request
     # Buttons in requested order: Add, Save, Delete All (stacked vertically)
     st.markdown("<div id='add-field-marker'></div>", unsafe_allow_html=True)
     if st.button("➕ Add New Field"):
         st.session_state['wiz_queries'].append({"topic": "", "possible_options": "None"})
         st.rerun()
     st.markdown("<div id='save-fields-marker'></div>", unsafe_allow_html=True)
-    if st.button("❗ Save Fields (important before start!)"):
+    if st.button("❗ Save Extraction Fields", type="primary"):
         _write_queries_py(q_rows)
         st.session_state['wiz_queries'] = list(q_rows)
-        st.success("Overwrote config/queries.py")
+        st.success("Saved extraction fields to config/queries.py")
     st.markdown("<div id='delete-all-marker'></div>", unsafe_allow_html=True)
-    if st.button("🗑️ Delete All Fields"):
+    if st.button("🗑️ Clear All Fields"):
         st.session_state['wiz_queries'] = []
         _write_queries_py([])
-        st.success("Cleared all fields")
+        st.success("All extraction fields cleared")
         st.rerun()
 
     st.markdown("---")
@@ -1296,10 +1327,17 @@ if page == "New Extraction":
         Pick an extraction mode and start extraction.
 
         Requirements:
-        - If using hosted APIs, set your API keys in the sidebar (OpenRouter or OpenAI, plus Llama Cloud for parsing).
-        - For local runs, you need both Ollama (for the LLM) and GROBID (for PDF parsing). These are disabled on the public demo.
+        - For hosted runs, API access is provided for you in this demo.
+        - For local runs, you need both Ollama (for the LLM) and GROBID (for PDF parsing).
         """
     )
+    st.markdown("**Mode Guide**")
+    st.markdown("- Naive RAG: single‑pass retrieval and answer. Fastest; good for straightforward fields. Lowest cost; ideal for quick demos and sanity checks.")
+    st.markdown("- Iterative RAG: two‑step refinement before answering. Slower; improves precision on nuanced fields. Balances speed and quality; reduces missed context and hallucinations.")
+    
+    st.markdown("- ReAct‑ExtrAct: adds confidence cues and structured extraction. Slowest; richest outputs. Produces citation‑backed, traceable entries; best when quality matters most.")
+    
+    st.markdown("---")
     # Allow running even if config/queries.py is empty (old behavior)
     try:
         _cfg_qs = [q for q in (_read_current_queries() or []) if str((q or {}).get('topic','')).strip()]
@@ -1312,6 +1350,7 @@ if page == "New Extraction":
         "ReAct-ExtrAct": "react_extract",
     }
     _rev_map = {v: k for k, v in _mode_map.items()}
+    # Hosted-demo notice removed for local app experience
     _current_internal = st.session_state.get('mode', 'baseline')
     _current_label = _rev_map.get(_current_internal, "Naive RAG")
     mode_label = st.selectbox("Run mode", options=list(_mode_map.keys()), index=list(_mode_map.keys()).index(_current_label), key="wiz_mode")
@@ -1341,6 +1380,35 @@ if page == "New Extraction":
         from config.config import API as _API_DEF, EMBEDDING_API as _EAPI_DEF, OLLAMA_BASE_URL as _OLLAMA_URL_DEF, OLLAMA_EXECUTION_MODEL as _OLLAMA_EXEC_DEF, OLLAMA_EMBEDDING_MODEL as _OLLAMA_EMB_DEF
     except Exception:
         _API_DEF, _EAPI_DEF, _OLLAMA_URL_DEF, _OLLAMA_EXEC_DEF, _OLLAMA_EMB_DEF = 'openrouter', 'openai', 'http://localhost:11434', 'llama3.1:8b-instruct', 'nomic-embed-text'
+    # Parsing Options (GROBID) — move above providers
+    try:
+        from config.config import USE_GROBID as _DEF_USE_GROBID, GROBID_URL as _DEF_GROBID_URL
+    except Exception:
+        _DEF_USE_GROBID, _DEF_GROBID_URL = False, "http://localhost:8070"
+    pg_cols = st.columns([1,2,1])
+    with pg_cols[0]:
+        use_grobid = st.toggle("Use GROBID Parser", value=bool(os.getenv('USE_GROBID') == '1') or _DEF_USE_GROBID, key="wiz_use_grobid")
+        os.environ['USE_GROBID'] = '1' if use_grobid else '0'
+    with pg_cols[1]:
+        if use_grobid:
+            grobid_url = st.text_input("GROBID URL", value=(os.getenv('GROBID_URL') or _DEF_GROBID_URL), key="wiz_grobid_url")
+            if grobid_url:
+                os.environ['GROBID_URL'] = grobid_url
+    with pg_cols[2]:
+        if use_grobid:
+            if st.button("Check GROBID status"):
+                try:
+                    import requests  # type: ignore
+                    url = (os.getenv('GROBID_URL') or _DEF_GROBID_URL).rstrip('/') + '/api/isalive'
+                    r = requests.get(url, timeout=8)
+                    if r.status_code == 200:
+                        st.success("GROBID is alive")
+                    else:
+                        st.warning(f"GROBID not healthy (HTTP {r.status_code})")
+                except Exception as e:
+                    st.error(f"GROBID check failed: {e}")
+
+    # Providers and models below GROBID
     prov_cols = st.columns([1,1,2])
     with prov_cols[0]:
         api_choice = st.selectbox("LLM Provider", options=["openrouter","ollama"], index=["openrouter","ollama"].index(_API_DEF) if _API_DEF in ["openrouter","ollama"] else 0, key="wiz_api")
@@ -1349,46 +1417,40 @@ if page == "New Extraction":
         eapi_choice = st.selectbox("Embedding Provider", options=["openai","ollama"], index=["openai","ollama"].index(_EAPI_DEF) if _EAPI_DEF in ["openai","ollama"] else 0, key="wiz_eapi")
         os.environ['EMBEDDING_API'] = eapi_choice
     with prov_cols[2]:
-        if api_choice == 'ollama' or eapi_choice == 'ollama':
-            oll_cols = st.columns([2,2,2])
-            with oll_cols[0]:
-                obase = st.text_input("OLLAMA_BASE_URL", value=os.getenv('OLLAMA_BASE_URL') or _OLLAMA_URL_DEF, key="wiz_ollama_base")
-                if obase:
-                    os.environ['OLLAMA_BASE_URL'] = obase
-            with oll_cols[1]:
-                oexec = st.text_input("Ollama Exec Model", value=os.getenv('OLLAMA_EXECUTION_MODEL') or _OLLAMA_EXEC_DEF, key="wiz_ollama_exec")
-                if oexec:
-                    os.environ['OLLAMA_EXECUTION_MODEL'] = oexec
-            with oll_cols[2]:
-                oemb = st.text_input("Ollama Embedding Model", value=os.getenv('OLLAMA_EMBEDDING_MODEL') or _OLLAMA_EMB_DEF, key="wiz_ollama_emb")
-                if oemb:
-                    os.environ['OLLAMA_EMBEDDING_MODEL'] = oemb
+        st.empty()
 
-    # Parsing Options (GROBID) — moved here from Settings
-    try:
-        from config.config import USE_GROBID as _DEF_USE_GROBID, GROBID_URL as _DEF_GROBID_URL
-    except Exception:
-        _DEF_USE_GROBID, _DEF_GROBID_URL = False, "http://localhost:8070"
-    pg_cols = st.columns([1,2,1])
-    with pg_cols[0]:
-        use_grobid = st.toggle("Use GROBID pre-parser", value=bool(os.getenv('USE_GROBID') == '1') or _DEF_USE_GROBID, key="wiz_use_grobid")
-        os.environ['USE_GROBID'] = '1' if use_grobid else '0'
-    with pg_cols[1]:
-        grobid_url = st.text_input("GROBID URL", value=(os.getenv('GROBID_URL') or _DEF_GROBID_URL), key="wiz_grobid_url")
-        if grobid_url:
-            os.environ['GROBID_URL'] = grobid_url
-    with pg_cols[2]:
-        if st.button("Check GROBID status"):
-            try:
-                import requests  # type: ignore
-                url = (os.getenv('GROBID_URL') or _DEF_GROBID_URL).rstrip('/') + '/api/isalive'
-                r = requests.get(url, timeout=8)
-                if r.status_code == 200:
-                    st.success("GROBID is alive")
-                else:
-                    st.warning(f"GROBID not healthy (HTTP {r.status_code})")
-            except Exception as e:
-                st.error(f"GROBID check failed: {e}")
+    # Ollama settings block below providers
+    if api_choice == 'ollama' or eapi_choice == 'ollama':
+        oll_cols = st.columns([2,2,2,1])
+        with oll_cols[0]:
+            obase = st.text_input("Ollama URL", value=os.getenv('OLLAMA_BASE_URL') or _OLLAMA_URL_DEF, key="wiz_ollama_base")
+            if obase:
+                os.environ['OLLAMA_BASE_URL'] = obase
+        with oll_cols[1]:
+            oexec = st.text_input("Ollama Exec Model", value=os.getenv('OLLAMA_EXECUTION_MODEL') or _OLLAMA_EXEC_DEF, key="wiz_ollama_exec")
+            if oexec:
+                os.environ['OLLAMA_EXECUTION_MODEL'] = oexec
+        with oll_cols[2]:
+            oemb = st.text_input("Ollama Embedding Model", value=os.getenv('OLLAMA_EMBEDDING_MODEL') or _OLLAMA_EMB_DEF, key="wiz_ollama_emb")
+            if oemb:
+                os.environ['OLLAMA_EMBEDDING_MODEL'] = oemb
+        with oll_cols[3]:
+            if st.button("Check Ollama status"):
+                try:
+                    import requests  # type: ignore
+                    base = (os.getenv('OLLAMA_BASE_URL') or _OLLAMA_URL_DEF).rstrip('/')
+                    url = base + '/api/version'
+                    r = requests.get(url, timeout=8)
+                    if r.status_code == 200:
+                        try:
+                            ver = r.json().get('version')
+                            st.success(f"Ollama is alive (version: {ver or 'unknown'})")
+                        except Exception:
+                            st.success("Ollama is alive")
+                    else:
+                        st.warning(f"Ollama not healthy (HTTP {r.status_code})")
+                except Exception as e:
+                    st.error(f"Ollama check failed: {e}")
 
     # Executor (execution model) selection
     try:
@@ -1396,12 +1458,9 @@ if page == "New Extraction":
     except Exception:
         _EXEC_DEF = "qwen/qwen-2.5-7b-instruct"
     exec_opts = [
-        _EXEC_DEF,
-        "qwen/qwen-turbo",
         "qwen/qwen-2.5-7b-instruct",
-        "qwen/qwen2.5-vl-72b-instruct",
-        "google/gemini-2.0-flash-lite-001",
-        "deepseek/deepseek-chat-v3.1:free",
+        "qwen/qwen3-14b",
+        "qwen/qwen3-32b",
     ]
     exec_opts = sorted(set(exec_opts))
     if api_choice == 'openrouter':
@@ -1415,207 +1474,165 @@ if page == "New Extraction":
     st.session_state['rebuild_indexes'] = False
     run_btn = st.button("▶️ Start Extraction of Data", type="primary")
 
-# Handle demo run trigger (old)
-if False and demo_run and not state.running:
-    # require keys & at least one pdf
-    keys_now = {
-        'OPENROUTER_API_KEY': or_key,
-        'OPENAI_API_KEY': oa_key,
-        'LLAMA_CLOUD_API_KEY': lc_key,
-        'COHERE_API_KEY': co_key,
-    }
-    if not _keys_ready(keys_now):
-        state.progress_stage = 'Missing API keys. Set keys in the sidebar.'
-    elif not any(name.lower().endswith('.pdf') for name in os.listdir(INPUT_DIR)):
-        state.progress_stage = 'No PDFs found in input/. Upload or copy demo files first.'
-    else:
-        # Initialize progress immediately
-        state.stdout = ''
-        state.stderr = ''
-        # Pre-compute planned steps (indexing + queries + eval)
-        try:
-            pdf_stems = [os.path.splitext(f)[0] for f in os.listdir(INPUT_DIR) if f.lower().endswith('.pdf')]
-        except Exception:
-            pdf_stems = []
-        storage_base = os.path.join(REPO_ROOT, 'storage', 'openrouter')
-        def _has_index_files(stem: str) -> bool:
-            p = os.path.join(storage_base, f"{stem}_vector_index")
-            return os.path.exists(os.path.join(p, 'docstore.json')) and os.path.exists(os.path.join(p, 'index_store.json'))
-        needs_build = []
-        idx_steps = 0
-        clear_storage_flag = bool(st.session_state.get('rebuild_indexes'))
-        if clear_storage_flag:
-            idx_steps = 3 * len(pdf_stems)
-            needs_build = list(pdf_stems)
-        else:
-            for stem in pdf_stems:
-                if _has_index_files(stem):
-                    idx_steps += 1
-                else:
-                    idx_steps += 3
-                    needs_build.append(stem)
-        try:
-            q_total = max(1, len(_read_current_queries()))
-        except Exception:
-            q_total = 5
-        query_steps = len(pdf_stems) * q_total
-        eval_off_flag = bool(st.session_state.get('eval_off'))
-        eval_steps = 0 if eval_off_flag else 1
-        state.idx_steps_total = idx_steps
-        state.query_steps_total = query_steps
-        state.eval_steps_total = eval_steps
-        state.steps_total = max(1, idx_steps + query_steps + eval_steps)
-        state.steps_done = 0
-        # Initial stage guess
-        if idx_steps > 0:
-            state.progress_stage = ('Parsing documents' if needs_build else 'Loading vector index')
-        elif query_steps > 0:
-            state.progress_stage = 'Querying your documents'
-        else:
-            state.progress_stage = 'Initializing...'
-        state.progress_pct = 1
-        state.started_at = time.time()
-        t = threading.Thread(target=_run_script, args=(st.session_state.get('demo_mode') or 'baseline', state, bool(st.session_state.get('eval_off')), bool(st.session_state.get('rebuild_indexes'))), daemon=True)
-        t.start()
-        st.rerun()
 
 if page == "New Extraction" and run_btn and not state.running:
     # Read keys from config/env
     keys_now = _read_api_keys()
     if not _keys_ready(keys_now):
-        state.progress_stage = 'Missing API keys. Set keys in the sidebar.'
-    elif not any(name.lower().endswith('.pdf') for name in os.listdir(INPUT_DIR)):
-        state.progress_stage = 'No PDFs found in input/. Upload files first.'
+        state.progress_stage = 'Missing API keys. In this demo, keys are provided; please try again shortly.'
     else:
-        # Start background thread and initialize timer/progress immediately
-        state.stdout = ''
-        state.stderr = ''
-        # Pre-compute planned steps (indexing + queries + eval)
+        active_dir = INPUT_DIR_DEMO if bool(st.session_state.get('use_demo')) else INPUT_DIR
         try:
-            pdf_stems = [os.path.splitext(f)[0] for f in os.listdir(INPUT_DIR) if f.lower().endswith('.pdf')]
+            has_pdfs = any(name.lower().endswith('.pdf') for name in os.listdir(active_dir))
         except Exception:
-            pdf_stems = []
-        storage_base = os.path.join(REPO_ROOT, 'storage', 'openrouter')
-        def _has_index_files(stem: str) -> bool:
-            p = os.path.join(storage_base, f"{stem}_vector_index")
-            return os.path.exists(os.path.join(p, 'docstore.json')) and os.path.exists(os.path.join(p, 'index_store.json'))
-        needs_build = []
-        idx_steps = 0
-        clear_storage_flag = bool(st.session_state.get('rebuild_indexes'))
-        if clear_storage_flag:
-            idx_steps = 3 * len(pdf_stems)
-            needs_build = list(pdf_stems)
+            has_pdfs = False
+        if not has_pdfs:
+            state.progress_stage = ('No PDFs found in example dataset.' if bool(st.session_state.get('use_demo')) else 'No PDFs found in input/. Upload files first.')
         else:
-            for stem in pdf_stems:
-                if _has_index_files(stem):
-                    idx_steps += 1
-                else:
-                    idx_steps += 3
-                    needs_build.append(stem)
-        try:
-            q_total = max(1, len(_read_current_queries()))
-        except Exception:
-            q_total = 5
-        query_steps = len(pdf_stems) * q_total
-        eval_off_flag = bool(st.session_state.get('eval_off'))
-        eval_steps = 0 if eval_off_flag else 1
-        state.idx_steps_total = idx_steps
-        state.query_steps_total = query_steps
-        state.eval_steps_total = eval_steps
-        state.steps_total = max(1, idx_steps + query_steps + eval_steps)
-        state.steps_done = 0
-        if idx_steps > 0:
-            state.progress_stage = ('Parsing documents' if needs_build else 'Loading vector index')
-        elif query_steps > 0:
-            state.progress_stage = 'Querying your documents'
-        else:
-            state.progress_stage = 'Initializing...'
-        state.progress_pct = 1
-        state.started_at = time.time()
-        # Pass optional planner heuristic override to backend via environment for ReAct‑ExtrAct
-        try:
-            if st.session_state.get('mode') == 'react_extract':
-                _ph_text = str(st.session_state.get('react_planner_heuristics') or '').strip()
-                if _ph_text:
-                    os.environ['PLANNER_HEURISTICS_OVERRIDE'] = _ph_text
-                else:
-                    try:
-                        del os.environ['PLANNER_HEURISTICS_OVERRIDE']
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-        # Ensure environment override points to single input directory
-        state.active_input_dir = INPUT_DIR
-        os.environ['INPUT_PATH'] = INPUT_DIR
-        # capture friendly run name: "<project> (<mode>, <N> PDFs)"
-        try:
-            proj = (st.session_state.get('project_name') or '').strip()
-            pdf_count = len(pdf_stems)
-            internal_mode = st.session_state.get('mode', 'baseline')
-            saved_name = f"{proj} ({internal_mode}, {pdf_count} PDFs)" if proj else f"{internal_mode} ({pdf_count} PDFs)"
-            state.run_name = saved_name
-        except Exception:
-            state.run_name = (st.session_state.get('project_name') or '').strip() or None
-        _mode_internal = st.session_state.get('mode', 'baseline')
-        t = threading.Thread(target=_run_script, args=(_mode_internal, state, bool(st.session_state.get('eval_off')), bool(st.session_state.get('rebuild_indexes'))), daemon=True)
-        t.start()
-        st.rerun()
+            # Start background thread and initialize timer/progress immediately
+            state.stdout = ''
+            state.stderr = ''
+            # Pre-compute planned steps (indexing + queries + eval)
+            try:
+                pdf_stems = [os.path.splitext(f)[0] for f in os.listdir(active_dir) if f.lower().endswith('.pdf')]
+            except Exception:
+                pdf_stems = []
+            storage_base = os.path.join(REPO_ROOT, 'storage', 'openrouter')
+            def _has_index_files(stem: str) -> bool:
+                p = os.path.join(storage_base, f"{stem}_vector_index")
+                return os.path.exists(os.path.join(p, 'docstore.json')) and os.path.exists(os.path.join(p, 'index_store.json'))
+            needs_build = []
+            idx_steps = 0
+            clear_storage_flag = bool(st.session_state.get('rebuild_indexes'))
+            if clear_storage_flag:
+                idx_steps = 3 * len(pdf_stems)
+                needs_build = list(pdf_stems)
+            else:
+                for stem in pdf_stems:
+                    if _has_index_files(stem):
+                        idx_steps += 1
+                    else:
+                        idx_steps += 3
+                        needs_build.append(stem)
+            try:
+                q_total = max(1, len(_read_current_queries()))
+            except Exception:
+                q_total = 5
+            query_steps = len(pdf_stems) * q_total
+            eval_off_flag = bool(st.session_state.get('eval_off'))
+            eval_steps = 0 if eval_off_flag else 1
+            state.idx_steps_total = idx_steps
+            state.query_steps_total = query_steps
+            state.eval_steps_total = eval_steps
+            state.steps_total = max(1, idx_steps + query_steps + eval_steps)
+            state.steps_done = 0
+            if idx_steps > 0:
+                state.progress_stage = ('Parsing documents' if needs_build else 'Loading vector index')
+            elif query_steps > 0:
+                state.progress_stage = 'Querying your documents'
+            else:
+                state.progress_stage = 'Initializing...'
+            state.progress_pct = 1
+            state.started_at = time.time()
+            # Pass optional planner heuristic override to backend via environment for ReAct‑ExtrAct
+            try:
+                if st.session_state.get('mode') == 'react_extract':
+                    _ph_text = str(st.session_state.get('react_planner_heuristics') or '').strip()
+                    if _ph_text:
+                        os.environ['PLANNER_HEURISTICS_OVERRIDE'] = _ph_text
+                    else:
+                        try:
+                            del os.environ['PLANNER_HEURISTICS_OVERRIDE']
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            # Ensure environment override points to selected input directory
+            state.active_input_dir = active_dir
+            os.environ['INPUT_PATH'] = active_dir
+            # capture friendly run name: "<project> (<mode>, <N> PDFs)"
+            try:
+                proj = (st.session_state.get('project_name') or '').strip()
+                pdf_count = len(pdf_stems)
+                internal_mode = st.session_state.get('mode', 'baseline')
+                saved_name = f"{proj} ({internal_mode}, {pdf_count} PDFs)" if proj else f"{internal_mode} ({pdf_count} PDFs)"
+                state.run_name = saved_name
+            except Exception:
+                state.run_name = (st.session_state.get('project_name') or '').strip() or None
+            _mode_internal = st.session_state.get('mode', 'baseline')
+            t = threading.Thread(target=_run_script, args=(_mode_internal, state, bool(st.session_state.get('eval_off')), bool(st.session_state.get('rebuild_indexes'))), daemon=True)
+            t.start()
+            st.rerun()
 
 
 if page == "New Extraction":
     left = st.container()
     with left:
-        st.subheader("Progress")
-        gif_col1, gif_col2 = st.columns([4, 1])
-        with gif_col1:
-            progress_ph = st.empty()
-            show_progress = bool(state.running or state.progress_pct > 0 or state.progress_stage)
-            if show_progress:
-                # Ensure a minimally visible bar while running
-                _disp_pct = max(5, int(state.progress_pct)) if state.running else int(state.progress_pct)
-                # Derive a robust stage label from recent logs to avoid being stuck on "Launching..."
-                recent = (state.stdout or '').splitlines()[-200:]
-                recent_join = "\n".join(recent)
-                display_stage = state.progress_stage or ''
-                if state.running:
-                    try:
-                        import re as _re
-                        if any((l.strip().startswith('Evaluating:') or 'RAGAS evaluation' in l) for l in recent[-100:]):
-                            display_stage = 'Evaluating answers'
-                        elif any(_re.search(r"Query\s*\[\d+/\d+\]", l) for l in recent[-200:]):
-                            display_stage = 'Querying your documents'
-                        elif any('loading existing index' in l for l in recent[-200:]):
-                            display_stage = 'Loading vector index'
-                        elif any('building VectorStoreIndex' in l or 'persisted index' in l for l in recent[-200:]):
-                            display_stage = 'Building vector index'
-                        elif any(l.startswith('[parse]') or 'Started parsing the file' in l for l in recent[-200:]):
-                            display_stage = 'Parsing documents'
-                        elif any('Processing file:' in l for l in recent[-200:]):
-                            display_stage = 'Preparing documents'
-                        elif not display_stage:
-                            display_stage = 'Initializing...'
-                    except Exception:
-                        pass
-                else:
-                    # Respect completion/failure when run is finished
-                    if state.exit_code is not None and state.exit_code != 0:
-                        display_stage = 'Failed'
-                    elif (state.progress_pct >= 100) or (not display_stage):
-                        display_stage = 'Completed'
-                # Render progress; show label below for compatibility across Streamlit versions
-                progress_ph.progress(_disp_pct)
-                pct_txt = f"{_disp_pct}%" if _disp_pct else ""
-                if display_stage or pct_txt:
-                    st.write(f"{pct_txt} {display_stage}".strip())
-                # (Removed elapsed time display by request)
+        st.subheader("Live Status")
+        progress_ph = st.empty()
+        show_progress = bool(state.running or state.progress_pct > 0 or state.progress_stage)
+        if show_progress:
+            # Ensure a minimally visible bar while running
+            _disp_pct = max(5, int(state.progress_pct)) if state.running else int(state.progress_pct)
+            # Derive a robust stage label from recent logs to avoid being stuck on "Launching..."
+            recent = (state.stdout or '').splitlines()[-200:]
+            recent_join = "\n".join(recent)
+            display_stage = state.progress_stage or ''
+            if state.running:
+                try:
+                    import re as _re
+                    # Highest priority: evaluation, then active query loop
+                    if any((l.strip().startswith('Evaluating:') or 'RAGAS evaluation' in l) for l in recent[-100:]):
+                        display_stage = 'Evaluating answers'
+                    elif any(_re.search(r"Query\s*\[\d+/\d+\]", l) for l in recent[-200:]):
+                        display_stage = 'Querying your documents'
+                    # New backend hints: executing/planning/engine
+                    elif any(l.strip().startswith('[execute]') for l in recent[-200:]):
+                        display_stage = 'Executing queries — please wait…'
+                    elif any(l.strip().startswith('[plan]') for l in recent[-200:]):
+                        display_stage = 'Planning'
+                    elif any(l.strip().startswith('[engine]') for l in recent[-200:]):
+                        display_stage = 'Query engine ready'
+                    # Indexing/IO stages
+                    elif any('loading existing index' in l for l in recent[-200:]):
+                        display_stage = 'Loading vector index'
+                    elif any('building VectorStoreIndex' in l or 'persisted index' in l for l in recent[-200:]):
+                        display_stage = 'Building vector index'
+                    elif any(l.startswith('[parse]') or 'Started parsing the file' in l for l in recent[-200:]):
+                        display_stage = 'Parsing documents'
+                    elif any('Processing file:' in l for l in recent[-200:]):
+                        display_stage = 'Preparing documents'
+                    elif not display_stage:
+                        display_stage = 'Initializing...'
+                except Exception:
+                    pass
             else:
-                progress_ph.empty()
-        with gif_col2:
+                # Respect completion/failure when run is finished
+                if state.exit_code is not None and state.exit_code != 0:
+                    display_stage = 'Failed'
+                elif (state.progress_pct >= 100) or (not display_stage):
+                    display_stage = 'Completed'
+            # Render concise status and place spinner directly below
+            status_txt = display_stage or 'Working...'
+            progress_ph.markdown(f"**{status_txt}**")
             if state.running:
                 st.image("https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExdDJjZ3JqZTV1ZzNkM2k4MHNobDBmYmdkZmQ4eWJ6b2sxajBodW4xMiZlcD12MV9naWZzX3NlYXJjaCZjdD1n/3oEjI6SIIHBdRxXI40/giphy.gif", width=120)
             else:
-                st.empty()
+                # One-time completion/failure notification
+                try:
+                    notif_key = f"completed_notified__{state.run_dir_name or 'current'}"
+                except Exception:
+                    notif_key = "completed_notified__current"
+                already = bool(st.session_state.get(notif_key))
+                if not already:
+                    if display_stage == 'Completed' and (state.exit_code is None or state.exit_code == 0):
+                        st.success("Completed ✅")
+                        st.session_state[notif_key] = True
+                    elif display_stage == 'Failed' or (state.exit_code and state.exit_code != 0):
+                        st.error("Failed ❌")
+                        st.session_state[notif_key] = True
+        else:
+            progress_ph.empty()
 
         with st.expander("Logs of the system", expanded=False):
             st.code(state.stdout or "(no logs yet)")
@@ -1648,8 +1665,18 @@ if page == "New Extraction":
     # Show a simple selector bar (newest to oldest). Do not auto-select a run.
     runs_list = _list_run_dirs()
     sentinel = "— Select a run —"
-    sel_opt = st.selectbox("Select extraction to view", options=[sentinel] + runs_list, index=0, key="new_run_selected_run")
-    selected_run = None if sel_opt == sentinel else sel_opt
+    runs_display = [_format_run_display(r) for r in runs_list]
+    display_to_real = {d: r for d, r in zip(runs_display, runs_list)}
+    sel_opt = st.selectbox("Select extraction to view", options=[sentinel] + runs_display, index=0, key="new_run_selected_run")
+    selected_run = None if sel_opt == sentinel else display_to_real.get(sel_opt)
+    # Keep selected run in session so Inspector writes validation to the same run
+    if selected_run:
+        st.session_state['selected_run'] = selected_run
+    else:
+        try:
+            st.session_state.pop('selected_run', None)
+        except Exception:
+            pass
     if selected_run:
         data = _discover_results(selected_run)
         # Quick diagnostics
@@ -1671,8 +1698,8 @@ if page == "New Extraction":
             row = {"paper": paper}
             for t in topic_columns:
                 r = topic_to_row.get(t, {})
-                conc = (r.get('answer_concise') or '').strip()
-                full = (r.get('answer') or '').strip()
+                conc = _strip_think((r.get('answer_concise') or '').strip())
+                full = _strip_think((r.get('answer') or '').strip())
                 row[t] = (conc if conc else full)
             rows.append(row)
         if rows and topic_columns:
@@ -1688,23 +1715,46 @@ if page == "New Extraction":
             fdf = df[df['paper'].isin(sel_papers)] if sel_papers else df
             visible_topics = [t for t in topic_columns if t in (sel_topics or topic_columns)]
 
-            # Header row: Paper | visible topics
-            header_cols = st.columns([1.2] + [2.2] * len(visible_topics))
+            # Pagination controls for topics (fields)
+            topics_per_page = st.number_input(
+                "Fields per page",
+                min_value=1,
+                max_value=50,
+                value=10,
+                step=1,
+                key="new_run_topics_per_page",
+            )
+            num_pages = max(1, (len(visible_topics) + topics_per_page - 1) // topics_per_page)
+            page_index = st.number_input(
+                "Page",
+                min_value=1,
+                max_value=num_pages,
+                value=1,
+                step=1,
+                key="new_run_topics_page",
+            )
+            start_idx = (page_index - 1) * topics_per_page
+            end_idx = start_idx + topics_per_page
+            page_topics = visible_topics[start_idx:end_idx]
+            st.caption(f"Showing fields {start_idx + 1}–{min(end_idx, len(visible_topics))} of {len(visible_topics)}")
+
+            # Header row: Paper | paginated topics
+            header_cols = st.columns([1.2] + [2.2] * len(page_topics))
             with header_cols[0]:
                 st.markdown("**Paper**")
-            for j, t in enumerate(visible_topics):
+            for j, t in enumerate(page_topics):
                 with header_cols[j+1]:
                     st.markdown(f"**{t}**")
 
             # Data rows
             for ridx, row in fdf.iterrows():
                 paper_nm = row['paper']
-                row_cols = st.columns([1.2] + [2.2] * len(visible_topics))
+                row_cols = st.columns([1.2] + [2.2] * len(page_topics))
                 with row_cols[0]:
                     short_paper = (paper_nm[:26] + '…') if len(paper_nm) > 28 else paper_nm
                     st.write(short_paper)
-                for j, t in enumerate(visible_topics):
-                    ans_preview = str(row.get(t, '') or '')
+                for j, t in enumerate(page_topics):
+                    ans_preview = str(_strip_think(row.get(t, '') or ''))
                     label = (ans_preview[:85] + '…') if len(ans_preview) > 88 else (ans_preview or "(empty)")
                     btn_key = f"new_run_tbl_btn__{paper_nm}__{t}__{ridx}__{j}"
                     if row_cols[j+1].button(f"🔍 {label}", key=btn_key):
@@ -1749,14 +1799,26 @@ if page == "New Extraction":
                 result = _find_result_for_topic_new(payload, topic)
                 st.markdown(f"### 🔎 Inspector — {paper} · {topic}")
                 # Answers (concise, full, code) first
-                if (result.get('answer_concise') or '').strip():
+                ca = _strip_think(result.get('answer_concise') or '')
+                fa = _strip_think(result.get('answer') or '')
+                if ca.strip():
                     st.markdown("**Concise Answer**")
-                    st.write(result.get('answer_concise') or '')
+                    st.write(ca)
                 st.markdown("**Full Answer**")
-                st.write(result.get('answer') or '')
+                st.write(fa)
                 if (result.get('code') or '').strip():
                     st.markdown("**Code**")
                     st.write(result.get('code') or '')
+                # Validation toggle (per run / paper / topic)
+                selected_run = st.session_state.get('selected_run') or st.session_state.get('current_run_dir') or st.session_state.get('run_dir_name')
+                val_data = _read_validation(selected_run)
+                was_valid = bool(((val_data.get(paper) or {}).get(topic)))
+                new_valid = st.toggle("Validated", value=was_valid, key=f"val_new_{paper}_{topic}")
+                if new_valid != was_valid:
+                    val_for_paper = val_data.get(paper) or {}
+                    val_for_paper[topic] = bool(new_valid)
+                    val_data[paper] = val_for_paper
+                    _write_validation(selected_run, val_data)
                 # Then evidence
                 st.markdown("**Evidence**")
                 bclist = (result.get('best_context') or [])
@@ -1778,9 +1840,11 @@ if page == "New Extraction":
                     fu_mode = st.selectbox("Mode", options=["Quick", "Iterative (2 steps)"] , key="new_run_insp_fu_mode")
                 with fu_cols[2]:
                     ask = st.button("Ask", key="new_run_insp_fu_ask")
+                    fu_status = st.empty()
                 if ask and (fu_q or '').strip():
-                    with st.spinner("Querying index…"):
-                        resp = _run_followup_query(paper, fu_q.strip(), fu_mode)
+                    fu_status.info("Querying index…")
+                    resp = _run_followup_query(paper, fu_q.strip(), fu_mode)
+                    fu_status.empty()
                     st.markdown("**Follow-up Answer**")
                     st.write(resp.get('answer') or '')
                     st.markdown("**Supporting contexts**")
@@ -1803,12 +1867,14 @@ if page == "New Extraction":
                     else:
                         st.markdown("---")
                         _render_inspector_body_new(ipaper, itopic)
+                # Close inspector after rendering to avoid re-opening on refresh
+                st.session_state['inspector_open'] = False
         else:
             st.warning("No answers found for this run. Ensure the run completed and wrote <paper>_result.json files.")
 
         st.markdown("---")
         st.markdown("### Step 5: Export CSV")
-        st.caption("Choose which papers and fields to include. You can optionally add code and top context columns to the export.")
+        st.caption("Choose which papers, fields, and columns to include in the CSV.")
         # Paper and field selection for export
         exp_papers = st.multiselect(
             "Select papers to include",
@@ -1817,15 +1883,20 @@ if page == "New Extraction":
             key="new_run_exp_papers",
         )
         exp_cols = st.multiselect("Select fields (topics) to include", options=topic_columns, default=topic_columns, key="new_run_exp_cols")
-        col_flags = st.columns(3)
-        with col_flags[0]:
-            include_code = st.checkbox("Include code columns", value=False, key="new_run_include_code")
-        with col_flags[1]:
-            include_ctx = st.checkbox("Include top context", value=False, key="new_run_include_ctx")
-        with col_flags[2]:
-            include_score = st.checkbox("Include top context score", value=False, key="new_run_include_score")
-
-        save_to_disk = st.checkbox("Also save to this run's folder", value=False, key="new_run_save_disk")
+        col_types = st.multiselect(
+            "Columns to include per field",
+            options=[
+                "Concise answer",
+                "Full answer",
+                "Code",
+                "Top context",
+                "Top context score",
+                "Validated",
+            ],
+            default=["Full answer"],
+            key="new_run_col_types",
+            help="Pick which columns you want for each field in the CSV.",
+        )
         out_rows: List[Dict[str, Any]] = []
         for paper, payload in data.items():
             if exp_papers and paper not in exp_papers:
@@ -1835,18 +1906,23 @@ if page == "New Extraction":
             row: Dict[str, Any] = {"paper": paper}
             for t in exp_cols:
                 r = by_topic.get(t)
-                conc = r.get('answer_concise') or ''
                 full = r.get('answer') or ''
-                row[f"CONCISE ANSWER: {t}"] = conc
-                row[f"FULL ANSWER: {t}"] = full
-                if include_code:
+                if "Concise answer" in col_types:
+                    row[f"CONCISE ANSWER: {t}"] = (r.get('answer_concise') if r else '')
+                if "Full answer" in col_types:
+                    row[f"FULL ANSWER: {t}"] = full
+                if "Code" in col_types:
                     row[f"CODE: {t}"] = (r.get('code') if r else '')
-                if include_ctx:
+                if "Top context" in col_types:
                     bc = (r.get('best_context') or [{}])[0] if r else {}
                     row[f"TOP CONTEXT: {t}"] = bc.get('context') or ''
-                if include_score:
+                if "Top context score" in col_types:
                     bc = (r.get('best_context') or [{}])[0] if r else {}
                     row[f"TOP CONTEXT SCORE: {t}"] = bc.get('score') if bc else ''
+                if "Validated" in col_types:
+                    # Use validation store if available
+                    val_data = _read_validation(selected_run)
+                    row[f"VALIDATED: {t}"] = bool(((val_data.get(paper) or {}).get(t)))
             out_rows.append(row)
         import pandas as pd
         out_df = pd.DataFrame(out_rows)
@@ -1857,16 +1933,7 @@ if page == "New Extraction":
             csv_text = out_df.to_csv(index=False, sep=CSV_DELIMITER)
             csv_bytes = csv_text.encode(CSV_ENCODING)
             st.download_button("Download CSV", data=csv_bytes, file_name=f"{selected_run}_results.csv", mime="text/csv", key="new_run_download_csv")
-            if save_to_disk:
-                try:
-                    out_dir = os.path.join(OUTPUT_DIR, selected_run)
-                    os.makedirs(out_dir, exist_ok=True)
-                    path = os.path.join(out_dir, f"{selected_run}_results.csv")
-                    with open(path, 'w', encoding=CSV_ENCODING, newline='') as f:
-                        f.write(csv_text)
-                    st.success(f"Saved: {path}")
-                except Exception as e:
-                    st.warning(f"Could not save CSV to disk: {e}")
+            # No additional save options
     else:
         st.info("No finished run detected yet.")
 
@@ -1901,8 +1968,8 @@ elif page == "Results Dashboard":
             row = {"paper": paper}
             for t in topic_columns:
                 r = topic_to_row.get(t, {})
-                conc = (r.get('answer_concise') or '').strip()
-                full = (r.get('answer') or '').strip()
+                conc = _strip_think((r.get('answer_concise') or '').strip())
+                full = _strip_think((r.get('answer') or '').strip())
                 row[t] = (conc if conc else full)
             rows.append(row)
         if rows and topic_columns:
@@ -1918,23 +1985,46 @@ elif page == "Results Dashboard":
             fdf = df[df['paper'].isin(sel_papers)] if sel_papers else df
             visible_topics = [t for t in topic_columns if t in (sel_topics or topic_columns)]
 
-            # Header row: Paper | visible topics
-            header_cols = st.columns([1.2] + [2.2] * len(visible_topics))
+            # Pagination controls for topics (fields)
+            topics_per_page = st.number_input(
+                "Fields per page",
+                min_value=1,
+                max_value=50,
+                value=10,
+                step=1,
+                key="hist_topics_per_page",
+            )
+            num_pages = max(1, (len(visible_topics) + topics_per_page - 1) // topics_per_page)
+            page_index = st.number_input(
+                "Page",
+                min_value=1,
+                max_value=num_pages,
+                value=1,
+                step=1,
+                key="hist_topics_page",
+            )
+            start_idx = (page_index - 1) * topics_per_page
+            end_idx = start_idx + topics_per_page
+            page_topics = visible_topics[start_idx:end_idx]
+            st.caption(f"Showing fields {start_idx + 1}–{min(end_idx, len(visible_topics))} of {len(visible_topics)}")
+
+            # Header row: Paper | paginated topics
+            header_cols = st.columns([1.2] + [2.2] * len(page_topics))
             with header_cols[0]:
                 st.markdown("**Paper**")
-            for j, t in enumerate(visible_topics):
+            for j, t in enumerate(page_topics):
                 with header_cols[j+1]:
                     st.markdown(f"**{t}**")
 
             # Data rows
             for ridx, row in fdf.iterrows():
                 paper_nm = row['paper']
-                row_cols = st.columns([1.2] + [2.2] * len(visible_topics))
+                row_cols = st.columns([1.2] + [2.2] * len(page_topics))
                 with row_cols[0]:
                     short_paper = (paper_nm[:26] + '…') if len(paper_nm) > 28 else paper_nm
                     st.write(short_paper)
-                for j, t in enumerate(visible_topics):
-                    ans_preview = str(row.get(t, '') or '')
+                for j, t in enumerate(page_topics):
+                    ans_preview = str(_strip_think(row.get(t, '') or ''))
                     label = (ans_preview[:85] + '…') if len(ans_preview) > 88 else (ans_preview or "(empty)")
                     btn_key = f"hist_tbl_btn__{paper_nm}__{t}__{ridx}__{j}"
                     if row_cols[j+1].button(f"🔍 {label}", key=btn_key):
@@ -1979,11 +2069,13 @@ elif page == "Results Dashboard":
                 result = _find_result_for_topic(payload, topic)
                 st.markdown(f"### 🔎 Inspector — {paper} · {topic}")
                 # Answers (concise, full, code) first
-                if (result.get('answer_concise') or '').strip():
+                ca = _strip_think(result.get('answer_concise') or '')
+                fa = _strip_think(result.get('answer') or '')
+                if ca.strip():
                     st.markdown("**Concise Answer**")
-                    st.write(result.get('answer_concise') or '')
+                    st.write(ca)
                 st.markdown("**Full Answer**")
-                st.write(result.get('answer') or '')
+                st.write(fa)
                 if (result.get('code') or '').strip():
                     st.markdown("**Code**")
                     st.write(result.get('code') or '')
@@ -2008,9 +2100,11 @@ elif page == "Results Dashboard":
                     fu_mode = st.selectbox("Mode", options=["Quick", "Iterative (2 steps)"] , key="hist_insp_fu_mode")
                 with fu_cols[2]:
                     ask = st.button("Ask", key="hist_insp_fu_ask")
+                    fu_status = st.empty()
                 if ask and (fu_q or '').strip():
-                    with st.spinner("Querying index…"):
-                        resp = _run_followup_query(paper, fu_q.strip(), fu_mode)
+                    fu_status.info("Querying index…")
+                    resp = _run_followup_query(paper, fu_q.strip(), fu_mode)
+                    fu_status.empty()
                     st.markdown("**Follow-up Answer**")
                     st.write(resp.get('answer') or '')
                     st.markdown("**Supporting contexts**")
@@ -2030,11 +2124,14 @@ elif page == "Results Dashboard":
                 else:
                     st.markdown("---")
                     _render_inspector_body_hist(ipaper, itopic)
+                # Close inspector after rendering to avoid re-opening on refresh
+                st.session_state['inspector_open'] = False
         else:
             st.warning("No answers found for this run. Ensure the run completed and wrote <paper>_result.json files.")
 
         st.markdown("---")
         st.markdown("### Export CSV")
+        st.caption("Choose which papers, fields, and columns to include in the CSV.")
         # Paper and field selection for export
         hist_exp_papers = st.multiselect(
             "Select papers to include",
@@ -2043,15 +2140,20 @@ elif page == "Results Dashboard":
             key="hist_exp_papers",
         )
         exp_cols = st.multiselect("Select fields (topics) to include", options=topic_columns, default=topic_columns, key="hist_exp_cols")
-        col_flags = st.columns(3)
-        with col_flags[0]:
-            include_code = st.checkbox("Include code columns", value=False, key="hist_include_code")
-        with col_flags[1]:
-            include_ctx = st.checkbox("Include top context", value=False, key="hist_include_ctx")
-        with col_flags[2]:
-            include_score = st.checkbox("Include top context score", value=False, key="hist_include_score")
-
-        save_to_disk = st.checkbox("Also save to this run's folder", value=False, key="hist_save_disk")
+        col_types = st.multiselect(
+            "Columns to include per field",
+            options=[
+                "Concise answer",
+                "Full answer",
+                "Code",
+                "Top context",
+                "Top context score",
+                "Validated",
+            ],
+            default=["Full answer"],
+            key="hist_col_types",
+            help="Pick which columns you want for each field in the CSV.",
+        )
         out_rows: List[Dict[str, Any]] = []
         for paper, payload in data.items():
             if hist_exp_papers and paper not in hist_exp_papers:
@@ -2061,18 +2163,22 @@ elif page == "Results Dashboard":
             row: Dict[str, Any] = {"paper": paper}
             for t in exp_cols:
                 r = by_topic.get(t)
-                conc = r.get('answer_concise') or ''
                 full = r.get('answer') or ''
-                row[f"CONCISE ANSWER: {t}"] = conc
-                row[f"FULL ANSWER: {t}"] = full
-                if include_code:
+                if "Concise answer" in col_types:
+                    row[f"CONCISE ANSWER: {t}"] = (r.get('answer_concise') if r else '')
+                if "Full answer" in col_types:
+                    row[f"FULL ANSWER: {t}"] = full
+                if "Code" in col_types:
                     row[f"CODE: {t}"] = (r.get('code') if r else '')
-                if include_ctx:
+                if "Top context" in col_types:
                     bc = (r.get('best_context') or [{}])[0] if r else {}
                     row[f"TOP CONTEXT: {t}"] = bc.get('context') or ''
-                if include_score:
+                if "Top context score" in col_types:
                     bc = (r.get('best_context') or [{}])[0] if r else {}
                     row[f"TOP CONTEXT SCORE: {t}"] = bc.get('score') if bc else ''
+                if "Validated" in col_types:
+                    val_data = _read_validation(selected_run)
+                    row[f"VALIDATED: {t}"] = bool(((val_data.get(paper) or {}).get(t)))
             out_rows.append(row)
         import pandas as pd
         out_df = pd.DataFrame(out_rows)
@@ -2083,54 +2189,52 @@ elif page == "Results Dashboard":
             csv_text = out_df.to_csv(index=False, sep=CSV_DELIMITER)
             csv_bytes = csv_text.encode(CSV_ENCODING)
             st.download_button("Download CSV", data=csv_bytes, file_name=f"{selected_run}_results.csv", mime="text/csv", key="hist_download_csv")
-            if save_to_disk:
-                try:
-                    out_dir = os.path.join(OUTPUT_DIR, selected_run)
-                    os.makedirs(out_dir, exist_ok=True)
-                    path = os.path.join(out_dir, f"{selected_run}_results.csv")
-                    with open(path, 'w', encoding=CSV_ENCODING, newline='') as f:
-                        f.write(csv_text)
-                    st.success(f"Saved: {path}")
-                except Exception as e:
-                    st.warning(f"Could not save CSV to disk: {e}")
 
 elif page == "Settings":
-    st.subheader("API Keys")
-    st.info("Enter keys used for model inference and parsing. For the purposes of this demo we provide access for free.")
-    keys_init = _read_api_keys()
-    colk1, colk2 = st.columns(2)
-    with colk1:
-        or_key = st.text_input(
-            "OPENROUTER_API_KEY",
-            value="",
-            placeholder="sk-or-****************",
-            type='password',
-            help="Leave blank to keep the current key"
-        )
-        lc_key = st.text_input(
-            "LLAMA_CLOUD_API_KEY",
-            value="",
-            placeholder="llx-****************",
-            type='password',
-            help="Leave blank to keep the current key"
-        )
-    with colk2:
-        oa_key = st.text_input(
-            "OPENAI_API_KEY",
-            value="",
-            placeholder="sk-****************",
-            type='password',
-            help="Leave blank to keep the current key"
-        )
-    if st.button("Save keys"):
-        _write_api_keys({
-            'OPENROUTER_API_KEY': (or_key or keys_init.get('OPENROUTER_API_KEY','')),
-            'OPENAI_API_KEY': (oa_key or keys_init.get('OPENAI_API_KEY','')),
-            'LLAMA_CLOUD_API_KEY': (lc_key or keys_init.get('LLAMA_CLOUD_API_KEY','')),
-            'COHERE_API_KEY': keys_init.get('COHERE_API_KEY',''),
-        })
-        st.success("Saved to config/config_keys.py")
+    st.subheader("Settings")
+    st.caption("Manage API keys and optional persistence. Keys are stored in-memory for this session and applied to environment variables.")
 
-    # GROBID parsing options moved to New Extraction page
+    keys_now = _read_api_keys()
+
+    with st.form("keys_form"):
+        st.markdown("**API Keys**")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            or_key = st.text_input("OPENROUTER_API_KEY", value=keys_now.get("OPENROUTER_API_KEY", ""), type="password")
+            oa_key = st.text_input("OPENAI_API_KEY", value=keys_now.get("OPENAI_API_KEY", ""), type="password")
+            lc_key = st.text_input("LLAMA_CLOUD_API_KEY", value=keys_now.get("LLAMA_CLOUD_API_KEY", ""), type="password")
+        with col_b:
+            oll_url = st.text_input("OLLAMA_BASE_URL (optional)", value=os.getenv("OLLAMA_BASE_URL") or keys_now.get("OLLAMA_BASE_URL", ""))
+            grobid_url = st.text_input("GROBID_URL (optional)", value=os.getenv("GROBID_URL") or "http://localhost:8070")
+
+        persist = st.checkbox("Persist to config/config_keys.py (writes on Save)", value=(os.getenv("ALLOW_WRITE_KEYS_FILE") == "1"))
+        submitted = st.form_submit_button("Save")
+        if submitted:
+            if persist:
+                os.environ["ALLOW_WRITE_KEYS_FILE"] = "1"
+            _write_api_keys({
+                'OPENROUTER_API_KEY': or_key,
+                'OPENAI_API_KEY': oa_key,
+                'LLAMA_CLOUD_API_KEY': lc_key,
+            })
+            if oll_url:
+                os.environ['OLLAMA_BASE_URL'] = oll_url
+            if grobid_url:
+                os.environ['GROBID_URL'] = grobid_url
+            st.success("Keys saved. They will be used immediately for this session.")
+
+    st.divider()
+    st.markdown("**Providers**")
+    try:
+        from config.config import API as _API_DEF, EMBEDDING_API as _EAPI_DEF
+    except Exception:
+        _API_DEF, _EAPI_DEF = 'openrouter', 'openai'
+    prov_cols = st.columns(2)
+    with prov_cols[0]:
+        api_choice = st.selectbox("LLM Provider", options=["openrouter","ollama"], index=["openrouter","ollama"].index(_API_DEF) if _API_DEF in ["openrouter","ollama"] else 0, key="settings_api")
+        os.environ['API'] = api_choice
+    with prov_cols[1]:
+        eapi_choice = st.selectbox("Embedding Provider", options=["openai","ollama"], index=["openai","ollama"].index(_EAPI_DEF) if _EAPI_DEF in ["openai","ollama"] else 0, key="settings_eapi")
+        os.environ['EMBEDDING_API'] = eapi_choice
 
 
